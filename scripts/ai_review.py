@@ -145,7 +145,7 @@ def review_via_api(payload: Dict[str, Any]) -> Tuple[Optional[str], str]:
         content = resp.json()["choices"][0]["message"]["content"]
         return parse_verdict(content)
     except Exception as exc:
-        return None, f"API error: {exc}"
+        return "FAIL", f"API error: {exc}"
 
 
 def _queue_paths(key: str) -> Tuple[str, str, str]:
@@ -161,6 +161,8 @@ def review_via_file(payload: Dict[str, Any], key: str, submitted_at: str) -> Tup
     pending_path, done_path, _ = _queue_paths(key)
 
     if not os.path.exists(pending_path):
+        if os.path.exists(done_path):
+            os.remove(done_path)
         with open(pending_path, "w", encoding="utf-8") as f:
             json.dump(
                 {
@@ -182,6 +184,10 @@ def review_via_file(payload: Dict[str, Any], key: str, submitted_at: str) -> Tup
             rationale = str(data.get("rationale", ""))[:500]
             if v in ("PASS", "FAIL"):
                 os.remove(pending_path)
+                try:
+                    os.remove(done_path)
+                except OSError:
+                    pass
                 return v, rationale
         except Exception as exc:
             return None, f"bad response file: {exc}"

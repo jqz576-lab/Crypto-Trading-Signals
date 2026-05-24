@@ -6,6 +6,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import json
 import tier1_monitor as m
 import ai_review as ar
 
@@ -172,6 +173,50 @@ def test_ai_parse_verdict():
     ok("parse FAIL json", v2 == "FAIL")
 
 
+def test_ai_file_clears_stale_done():
+    import tempfile
+    import shutil
+
+    td = tempfile.mkdtemp()
+    old_mode = os.environ.get("AI_REVIEW_MODE")
+    old_dir = os.environ.get("AI_REVIEW_QUEUE_DIR")
+    os.environ["AI_REVIEW_MODE"] = "file"
+    os.environ["AI_REVIEW_QUEUE_DIR"] = td
+    try:
+        key = "1_BTCUSDT_15m"
+        pending, done, _ = ar._queue_paths(key)
+        os.makedirs(os.path.dirname(pending), exist_ok=True)
+        os.makedirs(os.path.dirname(done), exist_ok=True)
+        with open(done, "w") as f:
+            json.dump({"verdict": "PASS", "rationale": "stale"}, f)
+        item = {
+            "strategy_id": 1,
+            "name": "T",
+            "symbol": "BTCUSDT",
+            "interval": "15m",
+            "direction": "LONG",
+            "submitted_at": "now",
+        }
+        klines = [[0, "1", "1", "1", "1", "1"]] * 60
+        v1, _ = ar.run_review(key, item, klines)
+        ok("first pass waits for new pending", v1 is None)
+        ok("stale done removed", not os.path.exists(done))
+        with open(done, "w") as f:
+            json.dump({"verdict": "FAIL", "rationale": "no"}, f)
+        v2, _ = ar.run_review(key, item, klines)
+        ok("reads fresh done", v2 == "FAIL")
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+        if old_mode is None:
+            os.environ.pop("AI_REVIEW_MODE", None)
+        else:
+            os.environ["AI_REVIEW_MODE"] = old_mode
+        if old_dir is None:
+            os.environ.pop("AI_REVIEW_QUEUE_DIR", None)
+        else:
+            os.environ["AI_REVIEW_QUEUE_DIR"] = old_dir
+
+
 def test_entry_queues_when_ai_enabled():
     old = os.environ.get("AI_REVIEW_ENABLED")
     os.environ["AI_REVIEW_ENABLED"] = "true"
@@ -273,6 +318,8 @@ def main():
     test_close_position()
     test_exit_12_rsi_below_70()
     test_ai_parse_verdict()
+    test_ai_file_clears_stale_done()
+    test_entry_queues_when_ai_enabled()
     test_ai_review_disabled_passes_through()
     test_first_run_no_spam()
     test_state_roundtrip()

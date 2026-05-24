@@ -30,9 +30,9 @@ Monitor: `scripts/tier1_monitor.py` — uses the **last closed candle** (`klines
 
 ## Notes
 
-- **#5 multiplier**: Minara’s featured backtest uses **8.5** (not 3.0) on BTC 1d — see TV script changelog on [VLRj2sG9](https://www.tradingview.com/script/VLRj2sG9/).
+- **#5 multiplier**: Featured TV backtest uses **8.5** (not 3.0) on BTC 1d — see changelog on [VLRj2sG9](https://www.tradingview.com/script/VLRj2sG9/).
 - **#3 / #6 / #10 / #17–21**: Complex Pine logic (AI scoring, moon calendar, Kalman) is approximated or marked FLAT where OHLC alone is insufficient.
-- **Alignment target**: Minara replicated TV with ≥90% trade match; offline monitor is for **directional alerts**, not trade-for-trade parity.
+- **Alignment**: Monitor targets directional parity with TV; trade-for-trade replication requires full Pine port per strategy.
 
 ## Runtime: signal + position tracking (5m)
 
