@@ -10,10 +10,13 @@ Signals use the last *closed* candle (klines[-2]) to avoid repainting on the ope
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import re
+import sys
 from datetime import datetime, timezone
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import requests
 
@@ -27,8 +30,10 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 THREAD_ID = os.environ.get("TELEGRAM_THREAD_ID", "205")
 KLINES_LIMIT = 500
+POLL_INTERVAL_SEC = 300  # 5 minutes — use cron */5 * * * * or `run --loop`
 
 Signal = str  # "LONG", "SHORT", "FLAT"
+ExitFn = Callable[[object, str], bool]
 
 
 def load_dotenv(path: str) -> None:
@@ -628,6 +633,113 @@ def check_20_qullamagi(klines) -> Signal:
     return "FLAT"
 
 
+# ===== Position exit checks (TradingView exit rules where known) =====
+def _exit_default(klines, side: str, checker: Callable) -> bool:
+    sig = checker(klines)
+    if side == "LONG":
+        return sig != "LONG"
+    if side == "SHORT":
+        return sig != "SHORT"
+    return True
+
+
+def exit_01_mean_reversion(klines, side: str) -> bool:
+    if not _need(klines, 220):
+        return False
+    _, highs, lows, closes = ohlc(klines)
+    i, _ = confirmed_indices()
+    rsi = rsi_wilder(closes)
+    stoch = stochastic_k(highs, lows, closes)
+    ema200 = ema_series(closes, 200)
+    if rsi[i] is None or stoch[i] is None or ema200[i] is None:
+        return False
+    if side == "LONG":
+        return rsi[i] > 65 and stoch[i] > 75 and closes[i] < ema200[i]
+    if side == "SHORT":
+        return rsi[i] < 20 and stoch[i] < 25 and closes[i] > ema200[i]
+    return _exit_default(klines, side, check_01_mean_reversion)
+
+
+def exit_07_macd_zero(klines, side: str) -> bool:
+    if side != "LONG" or not _need(klines, 80):
+        return _exit_default(klines, side, check_07_macd_zero)
+    _, _, _, closes = ohlc(klines)
+    i, j = confirmed_indices()
+    macd = macd_line_series(closes)
+    if macd[i] is None or macd[j] is None:
+        return False
+    return macd[j] > 0 >= macd[i] or macd[i] <= 0
+
+
+def exit_08_cdc_macd(klines, side: str) -> bool:
+    if side != "LONG" or not _need(klines, 80):
+        return _exit_default(klines, side, check_08_cdc_macd)
+    _, _, _, closes = ohlc(klines)
+    i, j = confirmed_indices()
+    line = macd_line_series(closes)
+    sig = macd_signal_series(closes)
+    if line[i] is None or sig[i] is None or line[j] is None or sig[j] is None:
+        return False
+    return cross_below(line[j], line[i], sig[j], sig[i]) or line[i] < sig[i]
+
+
+def exit_12_rsi70(klines, side: str) -> bool:
+    if side != "LONG" or not _need(klines, 30):
+        return _exit_default(klines, side, check_12_rsi70)
+    _, _, _, closes = ohlc(klines)
+    i, j = confirmed_indices()
+    rsi = rsi_wilder(closes)
+    if rsi[i] is None or rsi[j] is None:
+        return False
+    return cross_below(rsi[j], rsi[i], 70.0, 70.0) or rsi[i] < 70
+
+
+def exit_11_ema_cross(klines, side: str) -> bool:
+    if not _need(klines, 40):
+        return _exit_default(klines, side, check_11_ema_cross)
+    _, _, _, closes = ohlc(klines)
+    i, j = confirmed_indices()
+    e7 = ema_series(closes, 7)
+    e19 = ema_series(closes, 19)
+    if e7[i] is None or e19[i] is None or e7[j] is None or e19[j] is None:
+        return False
+    if side == "LONG":
+        return cross_below(e7[j], e7[i], e19[j], e19[i])
+    if side == "SHORT":
+        return cross_above(e7[j], e7[i], e19[j], e19[i])
+    return True
+
+
+def exit_13_sma_rsi(klines, side: str) -> bool:
+    if side != "LONG" or not _need(klines, 220):
+        return _exit_default(klines, side, check_13_sma_rsi)
+    _, _, _, closes = ohlc(klines)
+    i, _ = confirmed_indices()
+    sma50 = sma_series(closes, 50)
+    rsi21 = rsi_wilder(closes, 21)
+    rsi_avg = sma_series([v if v is not None else 0.0 for v in rsi21], 9)
+    if sma50[i] is None or rsi_avg[i] is None:
+        return False
+    return closes[i] < sma50[i] or rsi_avg[i] < 57
+
+
+EXIT_BY_ID: Dict[int, ExitFn] = {
+    1: exit_01_mean_reversion,
+    7: exit_07_macd_zero,
+    8: exit_08_cdc_macd,
+    11: exit_11_ema_cross,
+    12: exit_12_rsi70,
+    13: exit_13_sma_rsi,
+}
+
+
+def should_exit_position(sid: int, klines, side: str, checker: Callable) -> bool:
+    fn = EXIT_BY_ID.get(sid)
+    if fn:
+        return fn(klines, side)
+    return _exit_default(klines, side, checker)
+
+
 def check_21_kalman_breakout(klines) -> Signal:
     """Kalman-style breakout proxy: price vs EMA20 + ATR band."""
     if not _need(klines, 50):
@@ -648,6 +760,17 @@ def check_21_kalman_breakout(klines) -> Signal:
 
 # ===== Strategy registry (Minara Tier 1 table order) =====
 StrategyDef = Tuple[int, str, str, str, Callable, str]
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def get_strategy(sid: int) -> Optional[StrategyDef]:
+    for s in STRATEGIES:
+        if s[0] == sid:
+            return s
+    return None
 
 STRATEGIES: List[StrategyDef] = [
     (1, "BTC Mean Reversion RSI 20/65", "BTCUSDT", "15m", check_01_mean_reversion, "https://www.tradingview.com/script/pIrgsDpT/"),
@@ -678,61 +801,419 @@ def state_key(sid: int, symbol: str, interval: str) -> str:
     return f"{sid}_{symbol}_{interval}"
 
 
+def migrate_state(raw) -> dict:
+    if isinstance(raw, dict) and raw.get("version") == 2:
+        return raw
+    migrated = {
+        "version": 2,
+        "last_run": None,
+        "signals": {},
+        "positions": {},
+        "telegram_offset": 0,
+    }
+    if isinstance(raw, dict):
+        for key, val in raw.items():
+            if key in ("version", "signals", "positions", "telegram_offset", "last_run"):
+                continue
+            if isinstance(val, str) and val in ("LONG", "SHORT"):
+                migrated["signals"][key] = {
+                    "direction": val,
+                    "status": "active",
+                    "triggered_at": utc_now(),
+                    "last_seen_at": utc_now(),
+                }
+    return migrated
+
+
 def load_state() -> dict:
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, encoding="utf-8") as f:
-                return json.load(f)
+                return migrate_state(json.load(f))
         except Exception:
             pass
-    return {}
+    return migrate_state({})
 
 
 def save_state(state: dict) -> None:
+    state["version"] = 2
     os.makedirs(os.path.dirname(STATE_FILE) or ".", exist_ok=True)
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
 
 
-def run() -> None:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    print(f"Tier1 monitor run @ {now}")
+def current_signal_direction(sig: Signal) -> Optional[str]:
+    return sig if sig in ("LONG", "SHORT") else None
+
+
+def process_signal_lifecycle(
+    state: dict,
+    key: str,
+    sid: int,
+    name: str,
+    symbol: str,
+    interval: str,
+    signal: Signal,
+    tv_url: str,
+    alerts: List[str],
+) -> None:
+    """Track active signals; alert on new trigger, persistence, and disappearance."""
+    signals = state.setdefault("signals", {})
+    tracked = signals.get(key)
+    active_dir = current_signal_direction(signal)
+    now = utc_now()
+
+    if tracked and tracked.get("status") == "active":
+        prev_dir = tracked.get("direction")
+        if active_dir == prev_dir:
+            tracked["last_seen_at"] = now
+            print(f"  #{sid} {name}: {signal} (active, still valid)")
+            return
+        # Signal disappeared or flipped
+        signals[key] = {
+            "direction": prev_dir,
+            "status": "disappeared",
+            "triggered_at": tracked.get("triggered_at"),
+            "disappeared_at": now,
+            "last_seen_at": now,
+        }
+        alerts.append(
+            f"⚠️ <b>Signal ended</b> #{sid} {name}\n"
+            f"{symbol} {interval}: <code>{prev_dir}</code> no longer active "
+            f"(now <code>{signal}</code>)\n"
+            f"<a href=\"{tv_url}\">TradingView</a>"
+        )
+        print(f"  #{sid} {name}: {prev_dir} disappeared -> {signal}")
+        if active_dir and active_dir != prev_dir:
+            signals[key] = {
+                "direction": active_dir,
+                "status": "active",
+                "triggered_at": now,
+                "last_seen_at": now,
+            }
+            alerts.append(
+                f"🟢 <b>New signal</b> #{sid} {name}\n"
+                f"{symbol} {interval}: <code>{active_dir}</code>\n"
+                f"<a href=\"{tv_url}\">TradingView</a>"
+            )
+            print(f"  #{sid} {name}: new {active_dir}")
+        return
+
+    if active_dir:
+        signals[key] = {
+            "direction": active_dir,
+            "status": "active",
+            "triggered_at": now,
+            "last_seen_at": now,
+        }
+        alerts.append(
+            f"🟢 <b>Signal active</b> #{sid} {name}\n"
+            f"{symbol} {interval}: <code>{active_dir}</code>\n"
+            f"Monitoring every 5m until it ends.\n"
+            f"<a href=\"{tv_url}\">TradingView</a>\n"
+            f"Confirm entry: <code>/confirm {sid}</code>"
+        )
+        print(f"  #{sid} {name}: triggered {active_dir}")
+        return
+
+    if tracked and tracked.get("status") == "disappeared":
+        if active_dir:
+            signals[key] = {
+                "direction": active_dir,
+                "status": "active",
+                "triggered_at": now,
+                "last_seen_at": now,
+            }
+            alerts.append(
+                f"🟢 <b>Signal active</b> #{sid} {name}\n"
+                f"{symbol} {interval}: <code>{active_dir}</code>\n"
+                f"<a href=\"{tv_url}\">TradingView</a>\n"
+                f"Confirm entry: <code>/confirm {sid}</code>"
+            )
+            print(f"  #{sid} {name}: re-triggered {active_dir}")
+        else:
+            print(f"  #{sid} {name}: FLAT (idle)")
+        return
+    print(f"  #{sid} {name}: FLAT (idle)")
+
+
+def process_positions(
+    state: dict,
+    klines_cache: dict,
+    alerts: List[str],
+) -> None:
+    """Monitor user-confirmed positions for exit conditions."""
+    positions = state.get("positions", {})
+    if not positions:
+        return
+    to_remove = []
+    for key, pos in list(positions.items()):
+        sid = pos.get("strategy_id")
+        side = pos.get("side")
+        symbol = pos.get("symbol")
+        interval = pos.get("interval")
+        strat = get_strategy(sid) if sid else None
+        if not strat or not side:
+            to_remove.append(key)
+            continue
+        _, name, _, _, checker, tv_url = strat
+        cache_key = (symbol, interval)
+        klines = klines_cache.get(cache_key)
+        if klines is None:
+            klines = get_klines(symbol, interval)
+            klines_cache[cache_key] = klines
+        if not klines:
+            print(f"  [position] #{sid} no klines")
+            continue
+        try:
+            exit_now = should_exit_position(sid, klines, side, checker)
+            still_in = checker(klines) == side
+        except Exception as exc:
+            print(f"  [position] #{sid} error: {exc}")
+            continue
+        if exit_now:
+            entry = pos.get("entry_price")
+            entry_s = f" @ {entry}" if entry else ""
+            alerts.append(
+                f"🔴 <b>Close position</b> #{sid} {name}\n"
+                f"{symbol} {interval}: exit <code>{side}</code>{entry_s}\n"
+                f"Strategy exit condition met.\n"
+                f"<a href=\"{tv_url}\">TradingView</a>"
+            )
+            print(f"  [position] #{sid} EXIT alert ({side})")
+            to_remove.append(key)
+        else:
+            print(
+                f"  [position] #{sid} {side} held "
+                f"(signal={checker(klines)}, in_direction={still_in})"
+            )
+    for key in to_remove:
+        positions.pop(key, None)
+
+
+def poll_telegram_commands(state: dict) -> List[str]:
+    """Parse /confirm and /close from Telegram updates."""
+    if not TELEGRAM_BOT_TOKEN:
+        return []
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+    offset = state.get("telegram_offset", 0)
+    try:
+        resp = requests.get(
+            url, params={"offset": offset, "timeout": 0, "limit": 20}, timeout=10
+        )
+        data = resp.json()
+    except Exception as exc:
+        print(f"[TG POLL ERROR] {exc}")
+        return []
+    if not data.get("ok"):
+        return []
+    replies = []
+    for upd in data.get("result", []):
+        state["telegram_offset"] = upd["update_id"] + 1
+        msg = upd.get("message") or upd.get("edited_message")
+        if not msg:
+            continue
+        text = (msg.get("text") or "").strip()
+        chat_id = str(msg.get("chat", {}).get("id", ""))
+        if TELEGRAM_CHAT_ID and chat_id != str(TELEGRAM_CHAT_ID):
+            continue
+        m_confirm = re.match(
+            r"^/confirm(?:@\w+)?\s+(\d+)(?:\s+([\d.]+))?\s*$", text, re.I
+        )
+        m_close = re.match(r"^/close(?:@\w+)?\s+(\d+)\s*$", text, re.I)
+        m_status = re.match(r"^/status(?:@\w+)?\s*$", text, re.I)
+        if m_confirm:
+            sid = int(m_confirm.group(1))
+            price = float(m_confirm.group(2)) if m_confirm.group(2) else None
+            ok, info = cmd_confirm(state, sid, price)
+            replies.append(info)
+        elif m_close:
+            ok, info = cmd_close(state, int(m_close.group(1)))
+            replies.append(info)
+        elif m_status:
+            replies.append(cmd_status_text(state))
+    return replies
+
+
+def cmd_confirm(
+    state: dict, sid: int, entry_price: Optional[float] = None
+) -> Tuple[bool, str]:
+    strat = get_strategy(sid)
+    if not strat:
+        return False, f"Unknown strategy #{sid}"
+    _, name, symbol, interval, checker, tv_url = strat
+    key = state_key(sid, symbol, interval)
+    sig = state.get("signals", {}).get(key, {})
+    direction = sig.get("direction") if sig.get("status") == "active" else None
+    klines = get_klines(symbol, interval)
+    if not direction and klines:
+        direction = current_signal_direction(checker(klines))
+    if not direction:
+        return (
+            False,
+            f"#{sid} has no active signal — cannot confirm. Wait for a signal first.",
+        )
+    if entry_price is None and klines:
+        entry_price = float(ohlc(klines)[3][-2])
+    state.setdefault("positions", {})[key] = {
+        "strategy_id": sid,
+        "name": name,
+        "side": direction,
+        "symbol": symbol,
+        "interval": interval,
+        "confirmed_at": utc_now(),
+        "entry_price": entry_price,
+        "tv_url": tv_url,
+    }
+    px = f" @ <code>{entry_price}</code>" if entry_price else ""
+    return (
+        True,
+        f"✅ Recorded <b>#{sid} {name}</b>\n"
+        f"{symbol} {interval} <code>{direction}</code>{px}\n"
+        f"Exit alerts every 5m. Manual close: <code>/close {sid}</code>",
+    )
+
+
+def cmd_close(state: dict, sid: int) -> Tuple[bool, str]:
+    strat = get_strategy(sid)
+    if not strat:
+        return False, f"Unknown strategy #{sid}"
+    _, name, symbol, interval, _, _ = strat
+    key = state_key(sid, symbol, interval)
+    if key not in state.get("positions", {}):
+        return False, f"No open recorded position for #{sid}"
+    state["positions"].pop(key)
+    return True, f"✅ Closed tracking for <b>#{sid} {name}</b> (manual)"
+
+
+def cmd_status_text(state: dict) -> str:
+    lines = ["<b>Tier1 status</b>", ""]
+    act = [
+        (k, v)
+        for k, v in state.get("signals", {}).items()
+        if v.get("status") == "active"
+    ]
+    if act:
+        lines.append("<b>Active signals</b>")
+        for k, v in act:
+            lines.append(f"• {k}: <code>{v.get('direction')}</code>")
+    else:
+        lines.append("No active signals.")
+    pos = state.get("positions", {})
+    lines.append("")
+    if pos:
+        lines.append("<b>Open positions (confirmed)</b>")
+        for k, p in pos.items():
+            px = p.get("entry_price")
+            px_s = f" @ {px}" if px else ""
+            lines.append(
+                f"• #{p.get('strategy_id')} {p.get('symbol')} "
+                f"<code>{p.get('side')}</code>{px_s}"
+            )
+    else:
+        lines.append("No confirmed positions.")
+    return "\n".join(lines)
+
+
+def run_once() -> None:
+    now = utc_now()
+    print(f"Tier1 monitor @ {now} (poll every {POLL_INTERVAL_SEC}s)")
     state = load_state()
-    changes = []
+    state["last_run"] = now
+    alerts: List[str] = []
+    klines_cache: dict = {}
+
+    for reply in poll_telegram_commands(state):
+        alerts.append(reply)
 
     for sid, name, symbol, interval, checker, tv_url in STRATEGIES:
-        klines = get_klines(symbol, interval)
+        cache_key = (symbol, interval)
+        klines = klines_cache.get(cache_key)
+        if klines is None:
+            klines = get_klines(symbol, interval)
+            klines_cache[cache_key] = klines
         if not klines:
             print(f"  #{sid} {symbol} {interval}: no data")
             continue
+        key = state_key(sid, symbol, interval)
         try:
             signal = checker(klines)
+            process_signal_lifecycle(
+                state, key, sid, name, symbol, interval, signal, tv_url, alerts
+            )
         except Exception as exc:
             print(f"  #{sid} {name}: error {exc}")
-            continue
-        key = state_key(sid, symbol, interval)
-        prev = state.get(key, "FLAT")
-        state[key] = signal
-        if signal != prev:
-            changes.append((sid, name, symbol, interval, prev, signal, tv_url))
-            print(f"  #{sid} {name}: {prev} -> {signal}")
-        else:
-            print(f"  #{sid} {name}: {signal} (unchanged)")
 
+    process_positions(state, klines_cache, alerts)
     save_state(state)
 
-    if changes:
-        lines = [f"<b>Tier1 signal update</b> ({now})", ""]
-        for sid, name, symbol, interval, prev, signal, tv_url in changes:
-            lines.append(
-                f"#{sid} <b>{name}</b>\n"
-                f"{symbol} {interval}: <code>{prev}</code> → <code>{signal}</code>\n"
-                f"<a href=\"{tv_url}\">TradingView</a>"
-            )
-        send_telegram("\n".join(lines))
+    if alerts:
+        send_telegram("\n\n".join(alerts))
     else:
-        print("No signal changes.")
+        print("No alerts this cycle.")
+
+
+def run_loop(interval_sec: int = POLL_INTERVAL_SEC) -> None:
+    import time
+
+    print(f"Loop mode: every {interval_sec}s")
+    while True:
+        run_once()
+        time.sleep(interval_sec)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Tier1 strategy monitor (5m)")
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("run", help="Single monitoring cycle (for cron */5)")
+
+    p_loop = sub.add_parser("loop", help="Run forever every 5 minutes")
+    p_loop.add_argument(
+        "--interval",
+        type=int,
+        default=POLL_INTERVAL_SEC,
+        help="Seconds between cycles (default 300)",
+    )
+
+    p_confirm = sub.add_parser("confirm", help="Record that you opened a position")
+    p_confirm.add_argument("strategy_id", type=int)
+    p_confirm.add_argument("entry_price", type=float, nargs="?", default=None)
+
+    p_close = sub.add_parser("close", help="Stop tracking a position manually")
+    p_close.add_argument("strategy_id", type=int)
+
+    sub.add_parser("status", help="Print active signals and positions")
+
+    args = parser.parse_args()
+    cmd = args.command or "run"
+
+    if cmd == "run":
+        run_once()
+    elif cmd == "loop":
+        run_loop(args.interval)
+    elif cmd == "confirm":
+        state = load_state()
+        ok, msg = cmd_confirm(state, args.strategy_id, args.entry_price)
+        save_state(state)
+        print(msg)
+        if ok:
+            send_telegram(msg)
+        sys.exit(0 if ok else 1)
+    elif cmd == "close":
+        state = load_state()
+        ok, msg = cmd_close(state, args.strategy_id)
+        save_state(state)
+        print(msg)
+        if ok:
+            send_telegram(msg)
+        sys.exit(0 if ok else 1)
+    elif cmd == "status":
+        state = load_state()
+        text = cmd_status_text(state)
+        print(text.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", ""))
+        sys.exit(0)
 
 
 if __name__ == "__main__":
-    run()
+    main()

@@ -33,3 +33,17 @@ Monitor implementation: `scripts/tier1_monitor.py` — uses the **last closed ca
 - **#5 multiplier**: Minara’s featured backtest uses **8.5** (not 3.0) on BTC 1d — see TV script changelog on [VLRj2sG9](https://www.tradingview.com/script/VLRj2sG9/).
 - **#3 / #6 / #10 / #17–21**: Complex Pine logic (AI scoring, moon calendar, Kalman) is approximated or marked FLAT where OHLC alone is insufficient.
 - **Alignment target**: Minara replicated TV with ≥90% trade match; offline monitor is for **directional alerts**, not trade-for-trade parity.
+
+## Runtime: signal + position tracking (5m)
+
+| Phase | Behavior |
+|-------|----------|
+| Signal **on** | Telegram: signal active; suggests `/confirm {id}` |
+| Signal **still on** | No repeat alert; state `last_seen_at` updated |
+| Signal **off** | Telegram: signal ended (disappeared) |
+| **Confirmed** entry | Stored in `positions`; exit checked every 5m |
+| **Exit** hit | Telegram: close position; position removed from state |
+
+Dedicated exit rules (TV-aligned) for: **#1, #7, #8, #11, #12, #13**. Others use “signal no longer in your direction” (e.g. LONG position exits when checker ≠ LONG).
+
+Poll interval: **300 seconds** — `scripts/tier1_monitor.py run` via `*/5` cron, or `loop` subcommand.
