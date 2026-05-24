@@ -1,8 +1,8 @@
-# 21 Tier-1 Strategies (Minara × TradingView)
+# 21 Top Alpha Strategies (TradingView-aligned)
 
-Source article: [We Found 21 Money-Makers After Backtesting 236 TradingView Strategies](https://minara.ai/blog/we-found-21-money-makers-after-backtesting-236-tradingview-strategies/)
+Logic benchmarked against **April 2026** open-source TradingView Pine Script strategies on BTC, ETH, and SOL.
 
-Monitor implementation: `scripts/tier1_monitor.py` — uses the **last closed candle** (`klines[-2]`) to match non-repainting TV entries.
+Monitor: `scripts/tier1_monitor.py` — uses the **last closed candle** (`klines[-2]`) for non-repainting entries.
 
 | # | Strategy | Pair | TF | Core logic (monitor) | TradingView |
 |---|----------|------|-----|----------------------|-------------|

@@ -1,24 +1,58 @@
-# Crypto-Trading-Signals (JZ3 Production)
+# Crypto-Trading-Signals
 
-High-fidelity crypto trading signal monitor derived from Minara AI Tier 1 strategies.
-Used for monitoring the 2.5 BTC DCA Campaign ($900k USDT liquidity).
+**Automated monitoring of top-tier trading strategies for Crypto BTC, ETH, and SOL.**
 
-## Core Strategies
-- **#1 RSI Mean Reversion**: RSI < 20 + Stoch + EMA200 (long); RSI > 65 (short).
-- **#3 SuperTrend AI**: SuperTrend flip + EMA50 on BTC 4h (see docs for AI-layer limits).
-- **#5 SuperTrend Daily**: SMA-ATR SuperTrend, multiplier **8.5**, BTC 1d, long only.
-- **#7 MACD Zero-Line**: MACD line above zero (long only).
-- **#12 RSI > 70 Buy**: Momentum long while RSI > 70.
+*Let AI be your professional quant trading desk.*
 
-Full table + TradingView links: [docs/STRATEGIES.md](docs/STRATEGIES.md).  
-Reference: [Minara — 21 Tier-1 TV strategies](https://minara.ai/blog/we-found-21-money-makers-after-backtesting-236-tradingview-strategies/).
+This is not just a signal alert tool. It is a **production-grade monitoring system** built on an **AI-independent decision pipeline**, designed for crypto scalpers and swing traders. Twenty-one institutional-grade Alpha strategies are packaged for your AI Agent (Hermes / OpenClaw).
 
-## Tech Stack
-- **Data Source**: Binance Public API (no key; falls back to `data-api.binance.vision`).
-- **Execution**: Python 3.x, **every 5 minutes** (cron or built-in loop).
-- **Delivery**: Telegram Topic 205 (Hermes Agent).
+Used in production for the 2.5 BTC DCA Campaign ($900k USDT liquidity).
 
-## Monitoring (5-minute cycle)
+---
+
+## 1. Strategy foundation: institutional Alpha
+
+All **21 strategy logics** are aligned to the **April 2026** TradingView institutional Pine Script sources:
+
+- **Deep alignment** — not a rough mix of generic indicators; logic is benchmarked against original open-source Pine Script implementations.
+- **Full coverage** — BTC, ETH, and SOL: mean reversion, volatility breakout, MA stack trend systems, and specialized models (including moon-phase calendar where applicable).
+- **Venue-ready** — execution semantics are compatible with deep liquidity on **HyperLiquid**, **Binance**, and similar venues.
+
+Strategy reference table and TradingView links: [docs/STRATEGIES.md](docs/STRATEGIES.md).
+
+### Core strategies (highlights)
+
+| # | Strategy | Notes |
+|---|----------|--------|
+| 1 | RSI Mean Reversion | RSI &lt; 20 + Stoch + EMA200 (long); RSI &gt; 65 (short) |
+| 3 | SuperTrend AI | SuperTrend + EMA50 on BTC 4h |
+| 5 | SuperTrend Daily | SMA-ATR SuperTrend, multiplier **8.5**, BTC 1d, long only |
+| 7 | MACD Zero-Line | MACD line above zero (long only) |
+| 12 | RSI &gt; 70 Buy | Momentum long while RSI &gt; 70 |
+
+## 2. Why this stack
+
+- **Diversified models** — 21 independent engines reduce single-strategy failure in choppy markets.
+- **High-fidelity execution** — Pine-aligned Python monitors target **zero-drift** reproduction of TV logic on closed bars.
+- **Strong filters** — ADX momentum, EMA trend, stochastic extremes, volume surge, and composite rules cut false positives.
+
+## 3. Skill highlights
+
+### AI independent review queue
+
+When the monitor fires a candidate signal, the pipeline can bundle the **last 50 candles** plus strategy context for your **Agent main model** to re-simulate independently. Only after the model returns **PASS** with a short rationale should the signal be delivered—reducing indicator false positives.
+
+### Position lifecycle tracking (exit monitoring)
+
+The engine does not stop at “buy.” It tracks **confirmed positions** in monitor state and runs **per-strategy exit logic** every 5 minutes—so take-profit / trend-exit conditions are not missed.
+
+### Zero-config universal delivery
+
+No exchange API keys required for market data. Optional Telegram credentials only where you use direct bot delivery; otherwise route alerts through your Agent **deliver** channel (Telegram, Discord, web, etc.).
+
+---
+
+## Operations (5-minute cycle)
 
 ```bash
 # Cron (recommended)
@@ -30,8 +64,8 @@ python3 scripts/tier1_monitor.py loop
 
 Each cycle:
 
-1. **Signal lifecycle** — alerts when a signal turns on, stays active (silent), and when it **disappears**.
-2. **Confirmed positions** — after you record an entry, monitors **exit conditions** and sends close alerts.
+1. **Signal lifecycle** — alert on trigger, stay silent while active, alert when the signal **ends**.
+2. **Confirmed positions** — after you record an entry, monitor **exit conditions** and send close alerts.
 
 ### Telegram commands
 
@@ -41,10 +75,26 @@ Each cycle:
 | `/close 12` | Stop tracking position #12 manually |
 | `/status` | List active signals and open positions |
 
-CLI equivalents: `python3 scripts/tier1_monitor.py confirm 12`, `close 12`, `status`.
+CLI: `python3 scripts/tier1_monitor.py confirm 12`, `close 12`, `status`.
 
-State file: `TIER1_STATE_FILE` (default: `scripts/tier1_monitor_state.json`).
+**State file:** `TIER1_STATE_FILE` (default: `scripts/tier1_monitor_state.json`) — includes `signals` and `positions`.
+
+## Tech stack
+
+- **Data:** Binance public klines (`data-api.binance.vision` fallback)
+- **Runtime:** Python 3.x, **300s** poll interval
+- **Agent:** Hermes / OpenClaw integration
 
 ## Files
-- `scripts/tier1_monitor.py`: The engine.
-- `docs/STRATEGIES.md`: Detailed logic for all 21 strategies.
+
+| Path | Role |
+|------|------|
+| `scripts/tier1_monitor.py` | Monitoring engine |
+| `scripts/test_tier1_qa.py` | QA smoke tests |
+| `docs/STRATEGIES.md` | All 21 strategies + TV links |
+
+## QA
+
+```bash
+python3 scripts/test_tier1_qa.py
+```

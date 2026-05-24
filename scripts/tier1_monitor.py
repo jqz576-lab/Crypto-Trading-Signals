@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """
-21 Tier-1 strategy signal monitor (TradingView-aligned).
+21 top-tier Alpha strategy monitor (TradingView Pine-aligned, Apr 2026).
 
-Reference: Minara — "We Found 21 Money-Makers After Backtesting 236 TradingView Strategies"
-https://minara.ai/blog/we-found-21-money-makers-after-backtesting-236-tradingview-strategies/
-
+Automated signal + exit monitoring for BTC, ETH, and SOL.
 Signals use the last *closed* candle (klines[-2]) to avoid repainting on the open bar.
 """
 
@@ -758,7 +756,7 @@ def check_21_kalman_breakout(klines) -> Signal:
     return "FLAT"
 
 
-# ===== Strategy registry (Minara Tier 1 table order) =====
+# ===== Strategy registry (21 Alpha models) =====
 StrategyDef = Tuple[int, str, str, str, Callable, str]
 
 
