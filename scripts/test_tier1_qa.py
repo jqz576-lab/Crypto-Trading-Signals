@@ -7,6 +7,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tier1_monitor as m
+import ai_review as ar
 
 PASS, FAIL = 0, 0
 
@@ -164,20 +165,78 @@ def test_all_strategies_live():
     ok("all 21 strategies run", len(bad) == 0, "; ".join(bad[:5]))
 
 
+def test_ai_parse_verdict():
+    v, r = ar.parse_verdict('{"verdict":"PASS","rationale":"ok"}')
+    ok("parse PASS json", v == "PASS")
+    v2, _ = ar.parse_verdict('{"verdict":"FAIL","rationale":"chop"}')
+    ok("parse FAIL json", v2 == "FAIL")
+
+
+def test_entry_queues_when_ai_enabled():
+    old = os.environ.get("AI_REVIEW_ENABLED")
+    os.environ["AI_REVIEW_ENABLED"] = "true"
+    os.environ["AI_REVIEW_MODE"] = "file"
+    try:
+        state = m.migrate_state({})
+        state["meta"]["initialized"] = True
+        alerts = []
+        m.deliver_entry_alert(
+            state, "5_BTCUSDT_1d", 5, "ST", "BTCUSDT", "1d", "LONG", "http://x", "new", alerts
+        )
+        ok("queued not alerted", len(alerts) == 0 and "5_BTCUSDT_1d" in state["review_queue"])
+    finally:
+        os.environ.pop("AI_REVIEW_ENABLED", None)
+        os.environ.pop("AI_REVIEW_MODE", None)
+        if old:
+            os.environ["AI_REVIEW_ENABLED"] = old
+
+
+def test_ai_review_disabled_passes_through():
+    old = os.environ.get("AI_REVIEW_MODE")
+    os.environ["AI_REVIEW_MODE"] = "off"
+    try:
+        ok("review off", not ar.review_enabled())
+        v, _ = ar.run_review(
+            "k",
+            {
+                "strategy_id": 1,
+                "name": "T",
+                "symbol": "BTCUSDT",
+                "interval": "1h",
+                "direction": "LONG",
+            },
+            [[0, "1", "1", "1", "1", "1"]] * 60,
+        )
+        ok("off mode PASS", v == "PASS")
+    finally:
+        if old is None:
+            os.environ.pop("AI_REVIEW_MODE", None)
+        else:
+            os.environ["AI_REVIEW_MODE"] = old
+
+
 def test_first_run_no_spam():
-    state = m.migrate_state({})
-    state["meta"]["initialized"] = False
-    alerts = []
-    m.process_signal_lifecycle(
-        state, "k", 1, "T", "BTCUSDT", "1h", "LONG", "http://x", alerts
-    )
-    ok("first run seeds without alert", len(alerts) == 0)
-    state["meta"]["initialized"] = True
-    alerts.clear()
-    m.process_signal_lifecycle(
-        state, "k2", 2, "T", "BTCUSDT", "1h", "LONG", "http://x", alerts
-    )
-    ok("after init new signal alerts", len(alerts) == 1)
+    old = os.environ.get("AI_REVIEW_MODE")
+    os.environ["AI_REVIEW_MODE"] = "off"
+    try:
+        state = m.migrate_state({})
+        state["meta"]["initialized"] = False
+        alerts = []
+        m.process_signal_lifecycle(
+            state, "k", 1, "T", "BTCUSDT", "1h", "LONG", "http://x", alerts
+        )
+        ok("first run seeds without alert", len(alerts) == 0)
+        state["meta"]["initialized"] = True
+        alerts.clear()
+        m.process_signal_lifecycle(
+            state, "k2", 2, "T", "BTCUSDT", "1h", "LONG", "http://x", alerts
+        )
+        ok("after init new signal alerts", len(alerts) == 1)
+    finally:
+        if old is None:
+            os.environ.pop("AI_REVIEW_MODE", None)
+        else:
+            os.environ["AI_REVIEW_MODE"] = old
 
 
 def test_state_roundtrip():
@@ -213,6 +272,9 @@ def main():
     test_confirm_with_active_signal()
     test_close_position()
     test_exit_12_rsi_below_70()
+    test_ai_parse_verdict()
+    test_ai_review_disabled_passes_through()
+    test_first_run_no_spam()
     test_state_roundtrip()
     print("\nIntegration (Binance):")
     test_all_strategies_live()

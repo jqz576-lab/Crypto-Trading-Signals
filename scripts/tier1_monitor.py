@@ -18,6 +18,11 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import requests
 
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+from ai_review import review_enabled, run_review
+
 # ===== Configuration =====
 DOTENV = os.environ.get("TIER1_DOTENV", "/root/.hermes/.env")
 _DEFAULT_STATE = os.path.join(
@@ -810,6 +815,7 @@ def migrate_state(raw) -> dict:
         "meta": {"initialized": False},
         "signals": {},
         "positions": {},
+        "review_queue": {},
         "telegram_offset": 0,
     }
     if isinstance(raw, dict):
@@ -847,6 +853,157 @@ def current_signal_direction(sig: Signal) -> Optional[str]:
     return sig if sig in ("LONG", "SHORT") else None
 
 
+LOGIC_SUMMARY: Dict[int, str] = {
+    1: "RSI<20 + Stoch<25 + above EMA200 long; RSI>65 + Stoch>75 + below EMA200 short.",
+    5: "SuperTrend SMA-ATR(10)×8.5 long-only on daily close.",
+    7: "MACD line above zero long-only.",
+    12: "RSI cross above 70 enter; below 70 exit.",
+}
+
+
+def format_entry_alert(
+    sid: int,
+    name: str,
+    symbol: str,
+    interval: str,
+    direction: str,
+    tv_url: str,
+    title: str = "Signal active",
+    ai_note: str = "",
+) -> str:
+    ai_block = f"\n🧠 AI: {ai_note}" if ai_note else ""
+    return (
+        f"🟢 <b>{title}</b> #{sid} {name}\n"
+        f"{symbol} {interval}: <code>{direction}</code>\n"
+        f"Monitoring every 5m until it ends.{ai_block}\n"
+        f"<a href=\"{tv_url}\">TradingView</a>\n"
+        f"Confirm entry: <code>/confirm {sid}</code>"
+    )
+
+
+def queue_entry_review(
+    state: dict,
+    key: str,
+    sid: int,
+    name: str,
+    symbol: str,
+    interval: str,
+    direction: str,
+    tv_url: str,
+    event: str,
+) -> None:
+    """Hold entry alert until AI returns PASS."""
+    rq = state.setdefault("review_queue", {})
+    if key in rq and rq[key].get("status") == "pending":
+        return
+    rq[key] = {
+        "strategy_id": sid,
+        "name": name,
+        "symbol": symbol,
+        "interval": interval,
+        "direction": direction,
+        "tv_url": tv_url,
+        "event": event,
+        "status": "pending",
+        "submitted_at": utc_now(),
+    }
+    print(f"  #{sid} {name}: queued for AI review ({direction})")
+
+
+def deliver_entry_alert(
+    state: dict,
+    key: str,
+    sid: int,
+    name: str,
+    symbol: str,
+    interval: str,
+    direction: str,
+    tv_url: str,
+    event: str,
+    alerts: List[str],
+    ai_note: str = "",
+) -> None:
+    title = "New signal" if event == "flip" else "Signal active"
+    if review_enabled():
+        queue_entry_review(
+            state, key, sid, name, symbol, interval, direction, tv_url, event
+        )
+    else:
+        alerts.append(
+            format_entry_alert(
+                sid, name, symbol, interval, direction, tv_url, title, ai_note
+            )
+        )
+
+
+def cancel_review(state: dict, key: str, reason: str = "") -> None:
+    rq = state.get("review_queue", {})
+    if key in rq and rq[key].get("status") == "pending":
+        rq.pop(key, None)
+        if reason:
+            print(f"  [AI] cancelled review {key}: {reason}")
+
+
+def process_review_queue(
+    state: dict, klines_cache: dict, alerts: List[str]
+) -> None:
+    """Process pending AI reviews; push alerts only on PASS."""
+    rq = state.get("review_queue", {})
+    if not rq:
+        return
+    for key, item in list(rq.items()):
+        if item.get("status") != "pending":
+            continue
+        sid = item["strategy_id"]
+        symbol, interval = item["symbol"], item["interval"]
+        cache_key = (symbol, interval)
+        klines = klines_cache.get(cache_key)
+        if klines is None:
+            klines = get_klines(symbol, interval)
+            klines_cache[cache_key] = klines
+        if not klines:
+            continue
+        sig = state.get("signals", {}).get(key, {})
+        if sig.get("status") != "active" or sig.get("direction") != item.get("direction"):
+            cancel_review(state, key, "signal no longer active")
+            continue
+        logic = LOGIC_SUMMARY.get(sid, item.get("name", ""))
+        verdict, rationale = run_review(key, item, klines, logic)
+        if verdict is None:
+            print(f"  #{sid} AI review pending: {rationale[:60]}")
+            continue
+        item["status"] = verdict.lower()
+        item["rationale"] = rationale
+        item["reviewed_at"] = utc_now()
+        sig_ref = state.setdefault("signals", {}).setdefault(key, {})
+        sig_ref["ai_verdict"] = verdict
+        sig_ref["ai_rationale"] = rationale
+        if verdict == "PASS":
+            title = "New signal (AI PASS)" if item.get("event") == "flip" else "Signal active (AI PASS)"
+            alerts.append(
+                format_entry_alert(
+                    sid,
+                    item["name"],
+                    symbol,
+                    interval,
+                    item["direction"],
+                    item["tv_url"],
+                    title,
+                    rationale,
+                )
+            )
+            print(f"  #{sid} AI PASS: {rationale[:80]}")
+        else:
+            alerts.append(
+                f"⛔ <b>AI rejected</b> #{sid} {item['name']}\n"
+                f"{symbol} {interval}: <code>{item['direction']}</code>\n"
+                f"{rationale}\n"
+                f"<a href=\"{item['tv_url']}\">TradingView</a>"
+            )
+            print(f"  #{sid} AI FAIL: {rationale[:80]}")
+        del rq[key]
+
+
 def process_signal_lifecycle(
     state: dict,
     key: str,
@@ -878,6 +1035,7 @@ def process_signal_lifecycle(
             "disappeared_at": now,
             "last_seen_at": now,
         }
+        cancel_review(state, key, "signal ended")
         alerts.append(
             f"⚠️ <b>Signal ended</b> #{sid} {name}\n"
             f"{symbol} {interval}: <code>{prev_dir}</code> no longer active "
@@ -892,10 +1050,8 @@ def process_signal_lifecycle(
                 "triggered_at": now,
                 "last_seen_at": now,
             }
-            alerts.append(
-                f"🟢 <b>New signal</b> #{sid} {name}\n"
-                f"{symbol} {interval}: <code>{active_dir}</code>\n"
-                f"<a href=\"{tv_url}\">TradingView</a>"
+            deliver_entry_alert(
+                state, key, sid, name, symbol, interval, active_dir, tv_url, "flip", alerts
             )
             print(f"  #{sid} {name}: new {active_dir}")
         return
@@ -910,12 +1066,8 @@ def process_signal_lifecycle(
             "last_seen_at": now,
         }
         if initialized:
-            alerts.append(
-                f"🟢 <b>Signal active</b> #{sid} {name}\n"
-                f"{symbol} {interval}: <code>{active_dir}</code>\n"
-                f"Monitoring every 5m until it ends.\n"
-                f"<a href=\"{tv_url}\">TradingView</a>\n"
-                f"Confirm entry: <code>/confirm {sid}</code>"
+            deliver_entry_alert(
+                state, key, sid, name, symbol, interval, active_dir, tv_url, "new", alerts
             )
         print(f"  #{sid} {name}: triggered {active_dir}" + ("" if initialized else " (seed, no alert)"))
         return
@@ -929,11 +1081,8 @@ def process_signal_lifecycle(
                 "last_seen_at": now,
             }
             if initialized:
-                alerts.append(
-                    f"🟢 <b>Signal active</b> #{sid} {name}\n"
-                    f"{symbol} {interval}: <code>{active_dir}</code>\n"
-                    f"<a href=\"{tv_url}\">TradingView</a>\n"
-                    f"Confirm entry: <code>/confirm {sid}</code>"
+                deliver_entry_alert(
+                    state, key, sid, name, symbol, interval, active_dir, tv_url, "new", alerts
                 )
             print(f"  #{sid} {name}: re-triggered {active_dir}")
         else:
@@ -1113,6 +1262,18 @@ def cmd_status_text(state: dict) -> str:
             lines.append(f"• {k}: <code>{v.get('direction')}</code>")
     else:
         lines.append("No active signals.")
+    pending = [
+        (k, v)
+        for k, v in state.get("review_queue", {}).items()
+        if v.get("status") == "pending"
+    ]
+    lines.append("")
+    if pending:
+        lines.append("<b>AI review pending</b>")
+        for k, v in pending:
+            lines.append(f"• {k}: <code>{v.get('direction')}</code>")
+    else:
+        lines.append("No AI reviews pending.")
     pos = state.get("positions", {})
     lines.append("")
     if pos:
@@ -1158,6 +1319,7 @@ def run_once() -> None:
         except Exception as exc:
             print(f"  #{sid} {name}: error {exc}")
 
+    process_review_queue(state, klines_cache, alerts)
     process_positions(state, klines_cache, alerts)
     state.setdefault("meta", {})["initialized"] = True
     save_state(state)

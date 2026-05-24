@@ -38,9 +38,23 @@ Strategy reference table and TradingView links: [docs/STRATEGIES.md](docs/STRATE
 
 ## 3. Skill highlights
 
-### AI independent review queue
+### AI independent review queue (implemented)
 
-When the monitor fires a candidate signal, the pipeline can bundle the **last 50 candles** plus strategy context for your **Agent main model** to re-simulate independently. Only after the model returns **PASS** with a short rationale should the signal be delivered—reducing indicator false positives.
+When the monitor fires a **new entry** signal, it bundles the **last 50 candles** and strategy context for AI review. Only **PASS** results are pushed as trade alerts (with the model’s rationale). **FAIL** sends a short rejection notice. Signal **end** and **close position** alerts are never gated.
+
+Configure via API or file queue — see [docs/AI_REVIEW.md](docs/AI_REVIEW.md).
+
+```bash
+# Option A — OpenAI-compatible API
+export AI_REVIEW_API_KEY="your-key"
+
+# Option B — Hermes / OpenClaw agent file queue
+export AI_REVIEW_ENABLED=true
+export AI_REVIEW_MODE=file
+export AI_REVIEW_QUEUE_DIR=/data/hermes/tier1_review
+```
+
+Without `AI_REVIEW_API_KEY` or `AI_REVIEW_ENABLED=true`, entry alerts are sent immediately (gate off).
 
 ### Position lifecycle tracking (exit monitoring)
 
