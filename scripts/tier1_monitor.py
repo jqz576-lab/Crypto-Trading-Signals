@@ -803,10 +803,13 @@ def state_key(sid: int, symbol: str, interval: str) -> str:
 
 def migrate_state(raw) -> dict:
     if isinstance(raw, dict) and raw.get("version") == 2:
+        raw.setdefault("meta", {"initialized": True})
+        raw["meta"].setdefault("initialized", True)
         return raw
     migrated = {
         "version": 2,
         "last_run": None,
+        "meta": {"initialized": False},
         "signals": {},
         "positions": {},
         "telegram_offset": 0,
@@ -899,6 +902,8 @@ def process_signal_lifecycle(
             print(f"  #{sid} {name}: new {active_dir}")
         return
 
+    initialized = state.get("meta", {}).get("initialized", False)
+
     if active_dir:
         signals[key] = {
             "direction": active_dir,
@@ -906,14 +911,15 @@ def process_signal_lifecycle(
             "triggered_at": now,
             "last_seen_at": now,
         }
-        alerts.append(
-            f"🟢 <b>Signal active</b> #{sid} {name}\n"
-            f"{symbol} {interval}: <code>{active_dir}</code>\n"
-            f"Monitoring every 5m until it ends.\n"
-            f"<a href=\"{tv_url}\">TradingView</a>\n"
-            f"Confirm entry: <code>/confirm {sid}</code>"
-        )
-        print(f"  #{sid} {name}: triggered {active_dir}")
+        if initialized:
+            alerts.append(
+                f"🟢 <b>Signal active</b> #{sid} {name}\n"
+                f"{symbol} {interval}: <code>{active_dir}</code>\n"
+                f"Monitoring every 5m until it ends.\n"
+                f"<a href=\"{tv_url}\">TradingView</a>\n"
+                f"Confirm entry: <code>/confirm {sid}</code>"
+            )
+        print(f"  #{sid} {name}: triggered {active_dir}" + ("" if initialized else " (seed, no alert)"))
         return
 
     if tracked and tracked.get("status") == "disappeared":
@@ -924,12 +930,13 @@ def process_signal_lifecycle(
                 "triggered_at": now,
                 "last_seen_at": now,
             }
-            alerts.append(
-                f"🟢 <b>Signal active</b> #{sid} {name}\n"
-                f"{symbol} {interval}: <code>{active_dir}</code>\n"
-                f"<a href=\"{tv_url}\">TradingView</a>\n"
-                f"Confirm entry: <code>/confirm {sid}</code>"
-            )
+            if initialized:
+                alerts.append(
+                    f"🟢 <b>Signal active</b> #{sid} {name}\n"
+                    f"{symbol} {interval}: <code>{active_dir}</code>\n"
+                    f"<a href=\"{tv_url}\">TradingView</a>\n"
+                    f"Confirm entry: <code>/confirm {sid}</code>"
+                )
             print(f"  #{sid} {name}: re-triggered {active_dir}")
         else:
             print(f"  #{sid} {name}: FLAT (idle)")
@@ -1015,7 +1022,10 @@ def poll_telegram_commands(state: dict) -> List[str]:
             continue
         text = (msg.get("text") or "").strip()
         chat_id = str(msg.get("chat", {}).get("id", ""))
+        thread = str(msg.get("message_thread_id", ""))
         if TELEGRAM_CHAT_ID and chat_id != str(TELEGRAM_CHAT_ID):
+            continue
+        if THREAD_ID and thread and thread != str(THREAD_ID):
             continue
         m_confirm = re.match(
             r"^/confirm(?:@\w+)?\s+(\d+)(?:\s+([\d.]+))?\s*$", text, re.I
@@ -1052,6 +1062,12 @@ def cmd_confirm(
         return (
             False,
             f"#{sid} has no active signal — cannot confirm. Wait for a signal first.",
+        )
+    existing = state.get("positions", {}).get(key)
+    if existing and existing.get("side") == direction:
+        return (
+            False,
+            f"#{sid} already tracked as <code>{direction}</code> since {existing.get('confirmed_at', '?')}",
         )
     if entry_price is None and klines:
         entry_price = float(ohlc(klines)[3][-2])
@@ -1145,6 +1161,7 @@ def run_once() -> None:
             print(f"  #{sid} {name}: error {exc}")
 
     process_positions(state, klines_cache, alerts)
+    state.setdefault("meta", {})["initialized"] = True
     save_state(state)
 
     if alerts:
