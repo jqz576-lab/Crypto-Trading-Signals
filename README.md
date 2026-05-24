@@ -4,11 +4,14 @@ High-fidelity crypto trading signal monitor derived from Minara AI Tier 1 strate
 Used for monitoring the 2.5 BTC DCA Campaign ($900k USDT liquidity).
 
 ## Core Strategies
-- **#1 RSI Mean Reversion**: RSI < 20 Buy, RSI > 65 Sell.
-- **#3 SuperTrend AI**: Adaptive trend following on BTC 4h.
-- **#5 SuperTrend Daily**: Core trend sentinel for long-term holders.
-- **#7 MACD Zero-Line**: Trend confirmation for mid-term swings.
-- **#12 RSI > 70 Buy**: Momentum breakout strategy.
+- **#1 RSI Mean Reversion**: RSI < 20 + Stoch + EMA200 (long); RSI > 65 (short).
+- **#3 SuperTrend AI**: SuperTrend flip + EMA50 on BTC 4h (see docs for AI-layer limits).
+- **#5 SuperTrend Daily**: SMA-ATR SuperTrend, multiplier **8.5**, BTC 1d, long only.
+- **#7 MACD Zero-Line**: MACD line above zero (long only).
+- **#12 RSI > 70 Buy**: Momentum long while RSI > 70.
+
+Full table + TradingView links: [docs/STRATEGIES.md](docs/STRATEGIES.md).  
+Reference: [Minara — 21 Tier-1 TV strategies](https://minara.ai/blog/we-found-21-money-makers-after-backtesting-236-tradingview-strategies/).
 
 ## Tech Stack
 - **Data Source**: Binance Public API (No Key needed).
