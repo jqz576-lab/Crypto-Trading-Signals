@@ -27,8 +27,22 @@ Monitor: `scripts/tier1_monitor.py` — uses the **last closed candle** (`klines
 | 19 | Options Daily Long UTC | ETHUSDT | 5m | Time window proxy 08:30–08:00 UTC | [DJT1l5tH](https://www.tradingview.com/script/DJT1l5tH/) |
 | 20 | Qullamagi EMA Breakout | ETHUSDT | 1h | Close cross EMA20 with rising EMA50 | [0rVYn2c4](https://www.tradingview.com/script/0rVYn2c4/) |
 | 21 | Kinetic Kalman Breakout | ETHUSDT | 15m | EMA20 ± ATR band breakout proxy | [nd8EpyQ5](https://www.tradingview.com/script/nd8EpyQ5/) |
+| 22 | BTC MTF Engulfing Flip (1H) | BTCUSDT | 1h | D EMA50 + 4H RSI + 1H MACD/RSI regime; engulfing+ATR+vol for TV entry bar | [XGqSzuxJ](https://www.tradingview.com/script/XGqSzuxJ/) |
+| 23 | Momentum MACD (BTC 1H) | BTCUSDT | 1h | EMA50 + MACD(12,26,9) line/signal + zero-line side (proxy) | [b7zn25L6](https://www.tradingview.com/script/b7zn25L6/) |
+| 24 | Daily EMA50/200 Regime | BTCUSDT | 1d | EMA50 vs EMA200 + price side (HTF trend) | built-in |
+| 25 | BTC 7/19 EMA Cross | BTCUSDT | 30m | EMA7 vs EMA19 cross / position (same Pine as #11) | [c0dAzn2Q](https://www.tradingview.com/script/c0dAzn2Q/) |
+| 26 | BTC Keltner Breakout 4H | BTCUSDT | 4h | EMA20 ± 1.5×ATR(10) breakout (same proxy as #15) | [LmNV3ZLN](https://www.tradingview.com/script/LmNV3ZLN/) |
+| 27 | BTC Heikin Ashi PA (12H) | BTCUSDT | 12h | Green HA + close > high[1] > high[2]; exit on red HA + close < low[1] | [FEJvYRkw](https://www.tradingview.com/script/FEJvYRkw/) |
+| 28 | BTC SuperTrend (12H) | BTCUSDT | 12h | SuperTrend(10,3) direction (Hash Supertrend core) | [6zYF9Xts](https://www.tradingview.com/script/6zYF9Xts/) |
 
 ## Notes
+
+- **#25**: TV script is open-source (106+ favorites); same 7/19 EMA logic as ETH #11, ported to BTC 30m for timing gate at `step=2`.
+- **#26**: Keltner 4H complements existing BTC 4h pool (#3/#9/#12/#14); breakout-style confirmation on 4h closes.
+- **#27**: SoftKill21 HA strategy is **long-biased** (804 favorites, designed for 12/24h). Offline monitor approximates entry/exit; no pyramid/SL from TV.
+- **#28**: Bidirectional SuperTrend on 12h — use with #27 so SHORT timing has a 12h strategy match.
+- **Timing gate**: `entry_interval_for_step(step_bars)` maps scan cadence → strategy interval (15m→15m, 2→30m, 4→1h, 16→4h, 48→12h).
+- **#23**: Drun30 open-source MACD momentum script for BTC/USDT 1h; monitor uses simplified EMA50+MACD proxy until full Pine port.
 
 - **#5 multiplier**: Featured TV backtest uses **8.5** (not 3.0) on BTC 1d — see changelog on [VLRj2sG9](https://www.tradingview.com/script/VLRj2sG9/).
 - **#3 / #6 / #10 / #17–21**: Complex Pine logic (AI scoring, moon calendar, Kalman) is approximated or marked FLAT where OHLC alone is insufficient.
