@@ -306,6 +306,25 @@ def confirmed_indices() -> Tuple[int, int]:
     return -2, -3
 
 
+def heikin_ashi_series(
+    opens: Sequence[float],
+    highs: Sequence[float],
+    lows: Sequence[float],
+    closes: Sequence[float],
+) -> Tuple[List[float], List[float], List[float], List[float]]:
+    n = len(closes)
+    ha_o = [0.0] * n
+    ha_h = [0.0] * n
+    ha_l = [0.0] * n
+    ha_c = [0.0] * n
+    for i in range(n):
+        ha_c[i] = (opens[i] + highs[i] + lows[i] + closes[i]) / 4.0
+        ha_o[i] = (opens[i] + closes[i]) / 2.0 if i == 0 else (ha_o[i - 1] + ha_c[i - 1]) / 2.0
+        ha_h[i] = max(highs[i], ha_o[i], ha_c[i])
+        ha_l[i] = min(lows[i], ha_o[i], ha_c[i])
+    return ha_o, ha_h, ha_l, ha_c
+
+
 # ===== Strategy checks =====
 def _need(klines, min_bars: int) -> bool:
     return klines is not None and len(klines) >= min_bars
@@ -373,14 +392,20 @@ def check_03_supertrend_ai(klines) -> Signal:
 
 
 def check_05_supertrend_daily(klines) -> Signal:
-    """SuperTrend STRATEGY — BTC 1d, ATR SMA 10, multiplier 8.5, long only."""
+    """SuperTrend STRATEGY — BTC 1d, ATR SMA 10, multiplier 8.5, bidirectional."""
     if not _need(klines, 50):
         return "FLAT"
     _, highs, lows, closes = ohlc(klines)
     i, j = confirmed_indices()
     st = supertrend_direction(highs, lows, closes, period=10, multiplier=8.5)
+    if st[j] <= 0 and st[i] > 0:
+        return "LONG"
+    if st[j] >= 0 and st[i] < 0:
+        return "SHORT"
     if st[i] > 0:
         return "LONG"
+    if st[i] < 0:
+        return "SHORT"
     return "FLAT"
 
 
@@ -761,6 +786,189 @@ def check_21_kalman_breakout(klines) -> Signal:
     return "FLAT"
 
 
+def _bullish_engulfing(opens, closes, i: int, j: int) -> bool:
+    body_i = abs(closes[i] - opens[i])
+    body_j = abs(closes[j] - opens[j])
+    if body_i <= body_j:
+        return False
+    return (
+        closes[i] > opens[i]
+        and closes[i] > opens[j]
+        and opens[i] < closes[j]
+    )
+
+
+def _bearish_engulfing(opens, closes, i: int, j: int) -> bool:
+    body_i = abs(closes[i] - opens[i])
+    body_j = abs(closes[j] - opens[j])
+    if body_i <= body_j:
+        return False
+    return (
+        closes[i] < opens[i]
+        and closes[i] < opens[j]
+        and opens[i] > closes[j]
+    )
+
+
+def check_22_mtf_engulfing_1h(klines) -> Signal:
+    """
+    BTC MTF Engulfing Flip (1H) — offline proxy for jagadeeshmanne XGqSzuxJ.
+
+    TV entry requires D EMA50 + 4H RSI + 1H engulfing/MACD/RSI/ATR/volume alignment.
+    Monitor uses regime (first two TFs + 1H MACD/RSI) for ongoing bias; engulfing
+    stack marks the same bar as TV's rare entry trigger. Published Python backtest
+    (Apr 2026): BTCUSDT.P 1H, ~6.5y, PF ~5.5, CAGR ~143%.
+    """
+    if not _need(klines, 60):
+        return "FLAT"
+    k1d = get_klines("BTCUSDT", "1d", 120)
+    k4h = get_klines("BTCUSDT", "4h", 120)
+    if not _need(k1d, 55) or not _need(k4h, 20):
+        return "FLAT"
+
+    _, _, _, c1d = ohlc(k1d)
+    _, _, _, c4h = ohlc(k4h)
+    opens, highs, lows, closes = ohlc(klines)
+    volumes = [float(k[5]) for k in klines]
+    i, j = confirmed_indices()
+    id_ = i
+    i4 = i
+
+    ema50_d = ema_series(c1d, 50)
+    rsi4 = rsi_wilder(c4h, 14)
+    rsi1 = rsi_wilder(closes, 14)
+    macd_l = macd_line_series(closes, 12, 26)
+    macd_s = macd_signal_series(closes, 12, 26, 9)
+    if (
+        ema50_d[id_] is None
+        or rsi4[i4] is None
+        or rsi1[i] is None
+        or macd_l[i] is None
+        or macd_s[i] is None
+    ):
+        return "FLAT"
+
+    tr = true_range(highs, lows, closes)
+    atr = sma_series(tr, 14)
+    atr_vals = [x if x is not None else 0.0 for x in atr]
+    atr_avg = sma_series(atr_vals, 50)
+    vol_avg = sma_series(volumes, 20)
+
+    daily_long = c1d[id_] > ema50_d[id_]
+    daily_short = c1d[id_] < ema50_d[id_]
+    h4_long = rsi4[i4] > 50
+    h4_short = rsi4[i4] < 50
+    h1_long = rsi1[i] > 45 and macd_l[i] > macd_s[i]
+    h1_short = rsi1[i] < 55 and macd_l[i] < macd_s[i]
+
+    vol_ok = vol_avg[i] is not None and volumes[i] > 1.5 * vol_avg[i]
+    atr_ok = atr[i] is not None and atr_avg[i] is not None and atr[i] > atr_avg[i]
+    bull_eng = _bullish_engulfing(opens, closes, i, j)
+    bear_eng = _bearish_engulfing(opens, closes, i, j)
+
+    regime_long = daily_long and h4_long and h1_long
+    regime_short = daily_short and h4_short and h1_short
+    entry_long = regime_long and bull_eng and atr_ok and vol_ok
+    entry_short = regime_short and bear_eng and atr_ok and vol_ok
+
+    if entry_long or regime_long:
+        return "LONG"
+    if entry_short or regime_short:
+        return "SHORT"
+    return "FLAT"
+
+
+def check_23_momentum_macd_1h(klines) -> Signal:
+    """
+    Momentum MACD (BTC 1h) — monitor proxy for Drun30 b7zn25L6.
+
+    Uses EMA50 trend filter + MACD(12,26,9) line vs signal (no zero-line gate).
+    Open-source TV strategy labeled for BTC/USDT 1h; full Pine port pending.
+    """
+    if not _need(klines, 80):
+        return "FLAT"
+    _, _, _, closes = ohlc(klines)
+    i, _ = confirmed_indices()
+    ema50 = ema_series(closes, 50)
+    macd_l = macd_line_series(closes, 12, 26)
+    macd_s = macd_signal_series(closes, 12, 26, 9)
+    if ema50[i] is None or macd_l[i] is None or macd_s[i] is None:
+        return "FLAT"
+    if closes[i] > ema50[i] and macd_l[i] > macd_s[i]:
+        return "LONG"
+    if closes[i] < ema50[i] and macd_l[i] < macd_s[i]:
+        return "SHORT"
+    return "FLAT"
+
+
+def check_24_daily_ema_regime(klines) -> Signal:
+    """BTC 1d EMA50/200 regime — HTF trend for fusion (bidirectional)."""
+    if not _need(klines, 220):
+        return "FLAT"
+    _, _, _, closes = ohlc(klines)
+    i, _ = confirmed_indices()
+    ema50 = ema_series(closes, 50)
+    ema200 = ema_series(closes, 200)
+    if ema50[i] is None or ema200[i] is None:
+        return "FLAT"
+    if ema50[i] > ema200[i] and closes[i] > ema50[i]:
+        return "LONG"
+    if ema50[i] < ema200[i] and closes[i] < ema50[i]:
+        return "SHORT"
+    return "FLAT"
+
+
+def check_25_btc_ema_cross_30m(klines) -> Signal:
+    """7/19 EMA cross — BTC 30m (same Pine as #11, iamqamarali c0dAzn2Q)."""
+    return check_11_ema_cross(klines)
+
+
+def check_26_btc_keltner_4h(klines) -> Signal:
+    """Keltner breakout — BTC 4h (LmNV3ZLN logic, same proxy as #15)."""
+    return check_15_keltner_breakout(klines)
+
+
+def check_27_ha_pa_12h(klines) -> Signal:
+    """
+    Heikin Ashi + Price Action — BTC 12h long bias (SoftKill21 FEJvYRkw).
+
+    Entry: green HA + close > high[1] + high[1] > high[2].
+    Exit proxy: red HA + close < low[1] → FLAT.
+    """
+    if not _need(klines, 10):
+        return "FLAT"
+    opens, highs, lows, closes = ohlc(klines)
+    ha_o, _, _, ha_c = heikin_ashi_series(opens, highs, lows, closes)
+    i, j = confirmed_indices()
+    if i < 2:
+        return "FLAT"
+    green = ha_c[i] > ha_o[i]
+    red = ha_c[i] < ha_o[i]
+    entry = green and closes[i] > highs[j] and highs[j] > highs[i - 2]
+    exit_sig = red and closes[i] < lows[j]
+    if exit_sig:
+        return "FLAT"
+    if entry:
+        return "LONG"
+    if green and closes[i] > lows[j] and ha_c[j] > ha_o[j]:
+        return "LONG"
+    return "FLAT"
+
+
+def check_28_supertrend_12h(klines) -> Signal:
+    """Hash SuperTrend — BTC 12h bidirectional (6zYF9Xts core logic)."""
+    if not _need(klines, 50):
+        return "FLAT"
+    _, highs, lows, closes = ohlc(klines)
+    i, _ = confirmed_indices()
+    st = supertrend_direction(highs, lows, closes, period=10, multiplier=3.0)
+    if st[i] > 0:
+        return "LONG"
+    if st[i] < 0:
+        return "SHORT"
+    return "FLAT"
+
+
 # ===== Strategy registry (21 Alpha models) =====
 StrategyDef = Tuple[int, str, str, str, Callable, str]
 
@@ -797,6 +1005,62 @@ STRATEGIES: List[StrategyDef] = [
     (19, "Options Daily Long UTC", "ETHUSDT", "5m", check_19_options_daily, "https://www.tradingview.com/script/DJT1l5tH/"),
     (20, "Qullamagi EMA Breakout", "ETHUSDT", "1h", check_20_qullamagi, "https://www.tradingview.com/script/0rVYn2c4/"),
     (21, "Kinetic Kalman Breakout", "ETHUSDT", "15m", check_21_kalman_breakout, "https://www.tradingview.com/script/nd8EpyQ5/"),
+    (
+        22,
+        "BTC MTF Engulfing Flip (1H)",
+        "BTCUSDT",
+        "1h",
+        check_22_mtf_engulfing_1h,
+        "https://www.tradingview.com/script/XGqSzuxJ/",
+    ),
+    (
+        23,
+        "Momentum MACD (BTC 1H)",
+        "BTCUSDT",
+        "1h",
+        check_23_momentum_macd_1h,
+        "https://www.tradingview.com/script/b7zn25L6/",
+    ),
+    (
+        24,
+        "Daily EMA50/200 Regime",
+        "BTCUSDT",
+        "1d",
+        check_24_daily_ema_regime,
+        "https://www.tradingview.com/support/solutions/43000502589",
+    ),
+    (
+        25,
+        "BTC 7/19 EMA Cross (30m)",
+        "BTCUSDT",
+        "30m",
+        check_25_btc_ema_cross_30m,
+        "https://www.tradingview.com/script/c0dAzn2Q/",
+    ),
+    (
+        26,
+        "BTC Keltner Breakout (4H)",
+        "BTCUSDT",
+        "4h",
+        check_26_btc_keltner_4h,
+        "https://www.tradingview.com/script/LmNV3ZLN/",
+    ),
+    (
+        27,
+        "BTC Heikin Ashi PA (12H)",
+        "BTCUSDT",
+        "12h",
+        check_27_ha_pa_12h,
+        "https://www.tradingview.com/script/FEJvYRkw/",
+    ),
+    (
+        28,
+        "BTC SuperTrend (12H)",
+        "BTCUSDT",
+        "12h",
+        check_28_supertrend_12h,
+        "https://www.tradingview.com/script/6zYF9Xts/",
+    ),
 ]
 
 
