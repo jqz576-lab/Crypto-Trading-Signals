@@ -34,6 +34,9 @@ Monitor: `scripts/tier1_monitor.py` — uses the **last closed candle** (`klines
 | 26 | BTC Keltner Breakout 4H | BTCUSDT | 4h | EMA20 ± 1.5×ATR(10) breakout (same proxy as #15) | [LmNV3ZLN](https://www.tradingview.com/script/LmNV3ZLN/) |
 | 27 | BTC Heikin Ashi PA (12H) | BTCUSDT | 12h | Green HA + close > high[1] > high[2]; exit on red HA + close < low[1] | [FEJvYRkw](https://www.tradingview.com/script/FEJvYRkw/) |
 | 28 | BTC SuperTrend (12H) | BTCUSDT | 12h | SuperTrend(10,3) direction (Hash Supertrend core) | [6zYF9Xts](https://www.tradingview.com/script/6zYF9Xts/) |
+| 29 | BTC SuperTrend (1W) | BTCUSDT | 1w | SuperTrend(10,3) weekly HTF trend (#28 core) | [6zYF9Xts](https://www.tradingview.com/script/6zYF9Xts/) |
+| 30 | BTC EMA Regime (1M) | BTCUSDT | 1M | EMA50/200 when ≥220 bars else EMA12/36 proxy | built-in (#24 extension) |
+| 31 | BTC Weekly vs 3M | BTCUSDT | 1w | Weekly close > 3M close → LONG (default weight 0.5) | [c8wSnkUA](https://www.tradingview.com/script/c8wSnkUA/) |
 
 ## Notes
 
@@ -41,6 +44,8 @@ Monitor: `scripts/tier1_monitor.py` — uses the **last closed candle** (`klines
 - **#26**: Keltner 4H complements existing BTC 4h pool (#3/#9/#12/#14); breakout-style confirmation on 4h closes.
 - **#27**: SoftKill21 HA strategy is **long-biased** (804 favorites, designed for 12/24h). Offline monitor approximates entry/exit; no pyramid/SL from TV.
 - **#28**: Bidirectional SuperTrend on 12h — use with #27 so SHORT timing has a 12h strategy match.
+- **#29–#31** (Issue #15): 1W/1M HTF votes for fusion scoring only — **not** used by `entry_interval_for_step` timing gate (max interval remains 12h → 1d).
+- **#31**: Uses 1M close lagged 3 bars as ~3M proxy (Binance has no `3M` interval); fusion default weight **0.5**.
 - **Timing gate**: `entry_interval_for_step(step_bars)` maps scan cadence → strategy interval (15m→15m, 2→30m, 4→1h, 16→4h, 48→12h).
 - **#23**: Drun30 open-source MACD momentum script for BTC/USDT 1h; monitor uses simplified EMA50+MACD proxy until full Pine port.
 

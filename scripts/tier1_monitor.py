@@ -753,6 +753,7 @@ def exit_13_sma_rsi(klines, side: str) -> bool:
 
 EXIT_BY_ID: Dict[int, ExitFn] = {
     1: exit_01_mean_reversion,
+    33: exit_01_mean_reversion,
     7: exit_07_macd_zero,
     8: exit_08_cdc_macd,
     11: exit_11_ema_cross,
@@ -969,6 +970,52 @@ def check_28_supertrend_12h(klines) -> Signal:
     return "FLAT"
 
 
+def check_29_supertrend_1w(klines) -> Signal:
+    """Hash SuperTrend — BTC 1w bidirectional (6zYF9Xts core, Issue #15 HTF)."""
+    return check_28_supertrend_12h(klines)
+
+
+def check_30_monthly_ema_regime(klines) -> Signal:
+    """BTC 1M EMA regime — EMA50/200 when history allows, else EMA12/36 proxy (#24 extension)."""
+    if not _need(klines, 40):
+        return "FLAT"
+    _, _, _, closes = ohlc(klines)
+    i, _ = confirmed_indices()
+    fast, slow = (50, 200) if len(closes) >= 220 else (12, 36)
+    ema_fast = ema_series(closes, fast)
+    ema_slow = ema_series(closes, slow)
+    if ema_fast[i] is None or ema_slow[i] is None:
+        return "FLAT"
+    if ema_fast[i] > ema_slow[i] and closes[i] > ema_fast[i]:
+        return "LONG"
+    if ema_fast[i] < ema_slow[i] and closes[i] < ema_fast[i]:
+        return "SHORT"
+    return "FLAT"
+
+
+def check_31_weekly_vs_3m(klines) -> Signal:
+    """Weekly close vs ~3M close — witus9719 c8wSnkUA (1M lag-3 proxy; Binance has no 3M)."""
+    if not _need(klines, 3):
+        return "FLAT"
+    _, _, _, closes_w = ohlc(klines)
+    i, _ = confirmed_indices()
+    weekly_close = closes_w[i]
+    k1m = get_klines("BTCUSDT", "1M", 40)
+    if not _need(k1m, 4):
+        return "FLAT"
+    _, _, _, closes_1m = ohlc(k1m)
+    j, _ = confirmed_indices()
+    ref_idx = j - 3
+    if ref_idx < 0:
+        return "FLAT"
+    q_close = closes_1m[ref_idx]
+    if weekly_close > q_close:
+        return "LONG"
+    if q_close > weekly_close:
+        return "SHORT"
+    return "FLAT"
+
+
 # ===== Strategy registry (21 Alpha models) =====
 StrategyDef = Tuple[int, str, str, str, Callable, str]
 
@@ -1060,6 +1107,38 @@ STRATEGIES: List[StrategyDef] = [
         "12h",
         check_28_supertrend_12h,
         "https://www.tradingview.com/script/6zYF9Xts/",
+    ),
+    (
+        29,
+        "BTC SuperTrend (1W)",
+        "BTCUSDT",
+        "1w",
+        check_29_supertrend_1w,
+        "https://www.tradingview.com/script/6zYF9Xts/",
+    ),
+    (
+        30,
+        "BTC EMA Regime (1M)",
+        "BTCUSDT",
+        "1M",
+        check_30_monthly_ema_regime,
+        "https://www.tradingview.com/support/solutions/43000502589",
+    ),
+    (
+        31,
+        "BTC Weekly vs 3M",
+        "BTCUSDT",
+        "1w",
+        check_31_weekly_vs_3m,
+        "https://www.tradingview.com/script/c8wSnkUA/",
+    ),
+    (
+        33,
+        "BTC Mean Reversion RSI 20/65 (5m)",
+        "BTCUSDT",
+        "5m",
+        check_01_mean_reversion,
+        "https://www.tradingview.com/script/pIrgsDpT/",
     ),
 ]
 
